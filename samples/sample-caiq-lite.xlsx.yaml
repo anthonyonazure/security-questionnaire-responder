@@ -1,0 +1,123 @@
+# Sample input — modeled after a typical CAIQ-Lite / SIG-Lite extract.
+# In production the agent reads .xlsx (via openpyxl) and writes the
+# answers + confidence into the answer column. This YAML is the "parsed"
+# representation we emit + use for tests.
+#
+# Each item:
+#   id: questionnaire row id
+#   question: the actual prompt
+#   category: optional grouping
+#   answer_format: yes_no | yes_no_explain | free_text
+
+items:
+  - id: AC-01
+    category: Access Control
+    answer_format: yes_no_explain
+    question: Do you require multi-factor authentication for all employees?
+
+  - id: AC-02
+    category: Access Control
+    answer_format: yes_no_explain
+    question: Is single sign-on supported for customer applications?
+
+  - id: AC-03
+    category: Access Control
+    answer_format: yes_no_explain
+    question: Is privileged access governed by just-in-time provisioning?
+
+  - id: AC-04
+    category: Access Control
+    answer_format: free_text
+    question: Describe your password policy (length, complexity, lockout).
+
+  - id: ENC-01
+    category: Encryption
+    answer_format: yes_no_explain
+    question: Is data at rest encrypted? Specify algorithm and key management.
+
+  - id: ENC-02
+    category: Encryption
+    answer_format: yes_no_explain
+    question: Is data in transit encrypted with TLS 1.2 or higher?
+
+  - id: LOG-01
+    category: Logging
+    answer_format: yes_no_explain
+    question: Are administrative actions logged and retained?
+
+  - id: LOG-02
+    category: Logging
+    answer_format: free_text
+    question: What is the retention period for audit logs?
+
+  - id: IR-01
+    category: Incident Response
+    answer_format: yes_no_explain
+    question: Do you have a documented and tested incident response plan?
+
+  - id: IR-02
+    category: Incident Response
+    answer_format: free_text
+    question: What is your customer notification SLA for confirmed security incidents?
+
+  - id: VM-01
+    category: Vulnerability Management
+    answer_format: yes_no_explain
+    question: Are external-facing systems scanned for vulnerabilities at least monthly?
+
+  - id: VM-02
+    category: Vulnerability Management
+    answer_format: yes_no_explain
+    question: Do you commission third-party penetration tests annually?
+
+  - id: COMP-01
+    category: Compliance
+    answer_format: yes_no_explain
+    question: Do you maintain a current SOC 2 Type 2 attestation?
+
+  - id: COMP-02
+    category: Compliance
+    answer_format: yes_no_explain
+    question: Are you ISO 27001 certified?
+
+  - id: COMP-03
+    category: Compliance
+    answer_format: yes_no_explain
+    question: Do you process or store cardholder data subject to PCI DSS?
+
+  - id: DAT-01
+    category: Data Handling
+    answer_format: free_text
+    question: Where is customer data hosted? Can the customer choose a region?
+
+  - id: DAT-02
+    category: Data Handling
+    answer_format: yes_no_explain
+    question: Do you support customer-initiated data deletion within a defined SLA?
+
+  - id: DAT-03
+    category: Data Handling
+    answer_format: free_text
+    question: What are your documented RTO and RPO targets?
+
+  - id: SP-01
+    category: Subprocessors
+    answer_format: yes_no_explain
+    question: Do you maintain a public list of subprocessors and notify customers of changes?
+
+  - id: HR-01
+    category: Personnel
+    answer_format: yes_no_explain
+    question: Are employees with production access subject to background checks?
+
+  # Two intentionally hard questions — the agent should LOW-CONFIDENCE these
+  # rather than fabricate. A reviewer must answer these by hand.
+  - id: AC-99
+    category: Access Control
+    answer_format: free_text
+    question: Describe how you handle access reviews for orphaned customer-tenant accounts after a merger event.
+
+  - id: COMP-99
+    category: Compliance
+    answer_format: yes_no_explain
+    question: Are you certified to FedRAMP Moderate?

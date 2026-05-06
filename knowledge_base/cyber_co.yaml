@@ -1,0 +1,182 @@
+# Company-specific knowledge base. Each entry is one factual claim about
+# the company's security posture. The agent uses these to answer
+# questionnaire items, citing the entry's `id` so reviewers can trace
+# every answer back to its source.
+#
+# In production you'd seed this from policy docs, your SOC 2 evidence
+# pack, contracts. For the demo it's hand-curated to cover the most-asked
+# 30 questions across CAIQ, SIG-Lite, and typical procurement forms.
+
+knowledge:
+
+  # ---------- Identity & Access (most-asked category) ----------
+  - id: KB-IAM-MFA
+    topics: [mfa, authentication, identity, login, sso]
+    statement: |
+      All employee accounts are protected by Microsoft Entra ID with
+      conditional access policies enforcing MFA. Admin roles require
+      phishing-resistant MFA (FIDO2 / Windows Hello for Business) per
+      our internal policy SEC-IAM-001.
+
+  - id: KB-IAM-SSO
+    topics: [sso, saml, oidc, federation]
+    statement: |
+      SSO is enforced via Entra ID for all SaaS applications onboarded
+      after Q1 2024. Customers can federate their own IdP (SAML 2.0 or
+      OIDC) at the Enterprise tier and above.
+
+  - id: KB-IAM-PRIV
+    topics: [privileged_access, pim, least_privilege, role]
+    statement: |
+      Privileged access is governed by Entra Privileged Identity
+      Management (PIM). Just-in-time activation with MFA challenge is
+      required; max activation duration is 4 hours; all activations are
+      logged to the audit pipeline.
+
+  - id: KB-IAM-PASSWORD
+    topics: [password, complexity, reset, lockout]
+    statement: |
+      Password policy: minimum 14 characters, banned-password list
+      enforced, account lockout after 5 failed attempts within 15 min.
+      Self-service password reset requires MFA.
+
+  # ---------- Encryption ----------
+  - id: KB-CRYPTO-AT-REST
+    topics: [encryption, encryption_at_rest, data_protection, disk_encryption]
+    statement: |
+      Data at rest is encrypted with AES-256 using customer-managed
+      keys in Azure Key Vault. Key Vaults have soft-delete + purge
+      protection enabled per policy SEC-CRY-002.
+
+  - id: KB-CRYPTO-IN-TRANSIT
+    topics: [encryption, encryption_in_transit, tls, https]
+    statement: |
+      All inbound and outbound traffic uses TLS 1.2 or higher; TLS 1.0
+      and 1.1 are blocked at the load balancer. HSTS is enforced.
+
+  # ---------- Logging & Monitoring ----------
+  - id: KB-LOGGING-CENTRAL
+    topics: [logging, siem, audit_log, retention, monitoring]
+    statement: |
+      Centralized logging via Azure Monitor + Microsoft Sentinel; logs
+      are retained for 12 months hot, 7 years cold (immutable storage).
+      Critical security events page on-call within 5 minutes.
+
+  - id: KB-LOGGING-AUDIT
+    topics: [audit_trail, change_log, admin_action_log]
+    statement: |
+      All administrative actions in the production environment are
+      captured in the Entra audit log + Azure activity log, both of
+      which export to the central SIEM with a 12-month retention.
+
+  # ---------- Incident Response ----------
+  - id: KB-IR-PROGRAM
+    topics: [incident_response, breach, ir_plan]
+    statement: |
+      Incident response program is documented, tested at least
+      annually via tabletop exercises, and aligned to NIST SP 800-61
+      Rev 2. Customers are notified of a confirmed security incident
+      affecting their data within 72 hours of detection.
+
+  - id: KB-IR-FORENSICS
+    topics: [forensics, post_incident, root_cause]
+    statement: |
+      We engage a retained third-party forensics partner (Mandiant)
+      for any incident escalated past Severity 2.
+
+  # ---------- Vulnerability Management ----------
+  - id: KB-VULN-SCAN
+    topics: [vulnerability_scan, patch_management, scanning_frequency]
+    statement: |
+      External attack surface scanned weekly (Nessus + Tenable Web App
+      Scanner). Internal scans run monthly. Critical vulnerabilities
+      are remediated within 7 days; high within 30 days; medium within
+      90 days.
+
+  - id: KB-VULN-PENTEST
+    topics: [pentest, penetration_test, third_party_assessment]
+    statement: |
+      External penetration test conducted annually by a CREST-accredited
+      firm (NCC Group). Most recent test: Q3 2025. Remediation summary
+      available under NDA.
+
+  # ---------- Compliance ----------
+  - id: KB-COMPLIANCE-SOC2
+    topics: [soc2, audit, attestation]
+    statement: |
+      SOC 2 Type 2 attestation issued by Schellman; current report
+      covers 2024-04-01 through 2025-03-31. Available under NDA via
+      our Trust Center.
+
+  - id: KB-COMPLIANCE-ISO
+    topics: [iso27001, iso_27001, isms]
+    statement: |
+      ISO 27001:2022 certified by BSI, certificate IS-XXXXXX, valid
+      through 2027-06.
+
+  - id: KB-COMPLIANCE-PCI
+    topics: [pci, pci_dss, cardholder]
+    statement: |
+      We do NOT store, process, or transmit cardholder data directly;
+      payment processing is delegated to Stripe (PCI DSS Level 1).
+      Our scope is limited to SAQ-A.
+
+  # ---------- Data Handling ----------
+  - id: KB-DATA-RESIDENCY
+    topics: [data_residency, region, geo, sovereign_cloud]
+    statement: |
+      Customer data is stored in the Azure region the customer selects
+      at provisioning (East US, West Europe, Australia East). Data
+      does not cross regions except for opt-in cross-region DR.
+
+  - id: KB-DATA-RETENTION
+    topics: [retention, data_retention, deletion]
+    statement: |
+      Customer data is retained for the contract duration plus 30 days,
+      then irreversibly deleted within 90 days. Deletion is verified
+      via post-deletion audit.
+
+  - id: KB-DATA-BACKUP
+    topics: [backup, dr, business_continuity, rpo, rto]
+    statement: |
+      Backups: hourly snapshots, retained 30 days; daily full backups,
+      retained 90 days. Cross-region replication for DR. Documented
+      RTO 4 hours, RPO 1 hour.
+
+  # ---------- Subprocessors ----------
+  - id: KB-SUBPROC
+    topics: [subprocessor, third_party, vendor_list]
+    statement: |
+      Subprocessor list is published at trust.cyberco.example.com and
+      updated 30 days before any addition. Customers receive notice via
+      email when the list changes; contractual right-to-object applies.
+
+  # ---------- Personnel ----------
+  - id: KB-PEOPLE-BACKGROUND
+    topics: [background_check, vetting, hiring]
+    statement: |
+      All employees with production access pass a background check
+      (criminal, employment, education) before onboarding. Annual
+      reverification for staff with elevated access.
+
+  - id: KB-PEOPLE-TRAINING
+    topics: [security_training, awareness, phishing]
+    statement: |
+      Security awareness training mandatory at hire and annually
+      thereafter (KnowBe4). Phishing simulation runs quarterly with a
+      target click rate ≤ 5%.
+
+  # ---------- Network / Infra ----------
+  - id: KB-NET-WAF
+    topics: [waf, ddos, web_application_firewall]
+    statement: |
+      Public endpoints sit behind Cloudflare WAF + DDoS protection.
+      Origin servers reject traffic that hasn't traversed the WAF
+      (Authenticated Origin Pulls).
+
+  - id: KB-NET-SEGMENT
+    topics: [segmentation, zero_trust, network_isolation]
+    statement: |
+      Production is isolated in a dedicated Azure subscription with
+      private endpoints, deny-by-default NSGs, and no inbound RDP/SSH
+      from the internet (jump host via Bastion only).

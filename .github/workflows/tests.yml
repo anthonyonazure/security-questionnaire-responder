@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this agent
+        uses: actions/checkout@v4
+        with:
+          path: agent
+
+      - name: Checkout toolkit (sibling dep)
+        uses: actions/checkout@v4
+        with:
+          repository: anthonyonazure/b2b-agent-toolkit
+          path: b2b-agent-toolkit
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -e ./b2b-agent-toolkit
+          pip install -e "./agent[dev]"
+
+      - name: Run tests
+        working-directory: agent
+        run: pytest -q
