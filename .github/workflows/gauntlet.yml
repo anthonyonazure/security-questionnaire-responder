@@ -1,0 +1,116 @@
+name: gauntlet
+on:
+  push:
+  pull_request:
+  # A repo you have not touched in three months has not been checked in three
+  # months, while new vulnerabilities against what it already ships are
+  # published daily. The dependency and secret gates are time-sensitive, not
+  # edit-sensitive, so the whole gauntlet re-runs on a clock as well as on a
+  # commit. Silence is not the same as safety.
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install ruff mypy pytest
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy .
+      - run: pytest -q
+  secrets:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    container:
+      image: zricethezav/gitleaks:latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      # gitleaks CLI is license-free; the gitleaks-action wrapper is NOT (it requires
+      # a paid GITLEAKS_LICENSE on org accounts). Run the binary directly to avoid that.
+      - run: gitleaks detect --source . --redact --exit-code 1 --no-banner
+  deps:
+    name: dependency CVEs (osv-scanner)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: scan lockfiles for known vulnerabilities
+        run: |
+          curl -sSfL -o osv-scanner \
+            https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64
+          chmod +x osv-scanner
+          set +e
+          ./osv-scanner scan source --recursive ./
+          code=$?
+          set -e
+          # 0 = clean. 1 = vulnerabilities found, and that must fail the build.
+          # 128 = no package manifests in this repo, which is not a defect.
+          if [ "$code" = "128" ]; then
+            echo "GATE deps = NOT_APPLICABLE (no dependency manifests in this repo)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$code" = "0" ]; then
+            echo "GATE deps = VERIFIED" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $code
+  licenses:
+    name: licence policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: inventory dependency licences
+        run: |
+          curl -sSfL -o osv-scanner \
+            https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64
+          chmod +x osv-scanner
+          set +e
+          ./osv-scanner scan source --recursive --experimental-licenses-summary ./ > licences.txt 2>&1
+          code=$?
+          set -e
+          if [ "$code" = "128" ]; then
+            echo "GATE licences = NOT_APPLICABLE (no dependency manifests)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "### Dependency licences"
+            echo "<pre>"
+            cat licences.txt
+            echo "</pre>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Deny-list, not allow-list: an allow-list would fail every brownfield
+          # repo on day one and teach everyone to ignore the gate.
+          if grep -Eq '(AGPL|GPL-2|GPL-3|SSPL|CC-BY-NC|BUSL)' licences.txt; then
+            echo "GATE licences = FAILED (strong-copyleft or non-commercial licence present)" >> "$GITHUB_STEP_SUMMARY"
+            grep -E '(AGPL|GPL-2|GPL-3|SSPL|CC-BY-NC|BUSL)' licences.txt
+            exit 1
+          fi
+          echo "GATE licences = VERIFIED" >> "$GITHUB_STEP_SUMMARY"
+  sast:
+    name: static analysis (semgrep)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: advisory scan (all severities, never blocks)
+        run: |
+          semgrep scan --config=p/default --metrics=off --no-error \
+            --text --output=advisory.txt . || true
+          {
+            echo "### Semgrep advisory findings (not blocking)"
+            echo "<pre>"
+            tail -c 60000 advisory.txt || echo "(none)"
+            echo "</pre>"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: blocking scan (high-confidence only)
+        run: |
+          semgrep scan --config=p/default --metrics=off --severity=ERROR --error .
+          echo "GATE sast = VERIFIED (no ERROR-severity findings)" >> "$GITHUB_STEP_SUMMARY"

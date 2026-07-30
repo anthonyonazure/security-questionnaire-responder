@@ -1,0 +1,15 @@
+version: 2
+# Security updates are always on for every ecosystem GitHub understands; these
+# entries add routine version bumps so the repo does not drift years behind and
+# turn every future upgrade into a migration.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule: { interval: "daily" }
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "gauntlet"]
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule: { interval: "daily" }
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "gauntlet"]
