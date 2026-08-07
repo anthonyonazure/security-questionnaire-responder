@@ -16,6 +16,7 @@ import json
 import os
 
 from anthropic import AsyncAnthropic
+from anthropic.types import TextBlock
 
 MODEL = os.environ.get("SQR_MODEL", "claude-sonnet-4-6")
 
@@ -117,11 +118,15 @@ async def answer_item(item: dict, kb_hits: list[dict]) -> dict:
         max_tokens=600,
         messages=[{"role": "user", "content": prompt}],
     )
-    text = msg.content[0].text.strip()
+    # Message.content is a union of block kinds and only a text block carries
+    # prose; this prompt enables no tools, so anything else is a wrong answer.
+    block = msg.content[0]
+    if not isinstance(block, TextBlock):
+        raise TypeError(f"expected a text block from the model, got {block.type!r}")
+    text = block.text.strip()
     if text.startswith("```"):
         text = text.split("```", 2)[1]
-        if text.startswith("json"):
-            text = text[4:]
+        text = text.removeprefix("json")
         text = text.rsplit("```", 1)[0].strip()
     parsed = json.loads(text)
     return parsed

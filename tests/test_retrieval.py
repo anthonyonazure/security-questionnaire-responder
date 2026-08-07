@@ -36,5 +36,7 @@ def test_retrieve_returns_empty_for_irrelevant_question():
 
 def test_retrieve_respects_top_k():
     # Question that mentions multiple categories
-    hits = retrieve("authentication and encryption and incident response policies", KB, top_k=2)
+    hits = retrieve(
+        "authentication and encryption and incident response policies", KB, top_k=2
+    )
     assert len(hits) == 2

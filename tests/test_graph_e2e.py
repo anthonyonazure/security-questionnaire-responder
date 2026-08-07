@@ -39,7 +39,9 @@ async def test_full_run_against_sample(tmp_path, monkeypatch):
 
     # Every answer has citations OR is flagged for review
     for a in answers:
-        assert a["citations"] or a["needs_review"], f"{a['id']} has no citations and isn't flagged"
+        assert a["citations"] or a["needs_review"], (
+            f"{a['id']} has no citations and isn't flagged"
+        )
 
     # Average confidence is between 0 and 1
     assert 0.0 <= summary["avg_confidence"] <= 1.0
@@ -50,7 +52,9 @@ async def test_full_run_against_sample(tmp_path, monkeypatch):
     # COMP-99 (FedRAMP) — KB has nothing direct
     # At least one of them should be flagged. (Stub may incorrectly answer one.)
     hard = [by_id["AC-99"], by_id["COMP-99"]]
-    assert any(a["needs_review"] for a in hard), "Both hard questions answered with confidence — eval should catch this"
+    assert any(a["needs_review"] for a in hard), (
+        "Both hard questions answered with confidence — eval should catch this"
+    )
 
     # Output written
     out_files = list(tmp_path.glob("sample-caiq-lite*"))
