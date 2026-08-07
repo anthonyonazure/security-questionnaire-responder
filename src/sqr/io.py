@@ -23,6 +23,8 @@ def load_items(path: Path) -> list[dict[str, Any]]:
 
         wb = load_workbook(path)
         ws = wb.active
+        if ws is None:
+            raise ValueError(f"questionnaire workbook has no active sheet: {path}")
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
             return []
@@ -35,12 +37,18 @@ def load_items(path: Path) -> list[dict[str, Any]]:
         for row in rows[1:]:
             if not row or row[col_id] is None:
                 continue
-            items.append({
-                "id": str(row[col_id]),
-                "question": str(row[col_q] or ""),
-                "category": str(row[col_cat]) if col_cat is not None and row[col_cat] else "",
-                "answer_format": str(row[col_fmt]) if col_fmt is not None and row[col_fmt] else "free_text",
-            })
+            items.append(
+                {
+                    "id": str(row[col_id]),
+                    "question": str(row[col_q] or ""),
+                    "category": str(row[col_cat])
+                    if col_cat is not None and row[col_cat]
+                    else "",
+                    "answer_format": str(row[col_fmt])
+                    if col_fmt is not None and row[col_fmt]
+                    else "free_text",
+                }
+            )
         return items
     raise ValueError(f"unsupported questionnaire file type: {path.suffix}")
 
@@ -69,6 +77,8 @@ def write_responses(
 
         wb = load_workbook(source_path)
         ws = wb.active
+        if ws is None:
+            raise ValueError(f"source workbook has no active sheet: {source_path}")
         # Add answer columns if missing
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=False))
         existing_headers = [c.value for c in header_row]
@@ -80,7 +90,9 @@ def write_responses(
         # Build a id → answer map
         by_id = {a["id"]: a for a in answers}
 
-        review_fill = PatternFill(start_color="FFF7CC", end_color="FFF7CC", fill_type="solid")
+        review_fill = PatternFill(
+            start_color="FFF7CC", end_color="FFF7CC", fill_type="solid"
+        )
         for row in ws.iter_rows(min_row=2):
             row_id = str(row[0].value or "").strip()
             ans = by_id.get(row_id)

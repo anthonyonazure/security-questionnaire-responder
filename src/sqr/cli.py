@@ -26,9 +26,13 @@ log = structlog.get_logger()
 
 @app.command()
 def run(
-    questionnaire: str = typer.Option(..., "--questionnaire", "-q", help="YAML or XLSX questionnaire"),
+    questionnaire: str = typer.Option(
+        ..., "--questionnaire", "-q", help="YAML or XLSX questionnaire"
+    ),
     kb: str = typer.Option(None, "--kb", help="Knowledge base YAML"),
-    threshold: float = typer.Option(None, "--threshold", help="Confidence cutoff for human review (0-1)"),
+    threshold: float = typer.Option(
+        None, "--threshold", help="Confidence cutoff for human review (0-1)"
+    ),
 ) -> None:
     """Auto-answer a vendor security questionnaire from the knowledge base."""
     asyncio.run(_run(questionnaire, kb, threshold))
@@ -39,8 +43,11 @@ async def _run(q_path: str, kb_path: str | None, threshold: float | None) -> Non
     initial: QState = {
         "run_id": run_id,
         "questionnaire_path": q_path,
-        "knowledge_base_path": kb_path or os.environ.get("SQR_KNOWLEDGE_BASE", "knowledge_base/cyber_co.yaml"),
-        "human_review_threshold": threshold if threshold is not None else float(os.environ.get("SQR_HUMAN_REVIEW_THRESHOLD", "0.7")),
+        "knowledge_base_path": kb_path
+        or os.environ.get("SQR_KNOWLEDGE_BASE", "knowledge_base/cyber_co.yaml"),
+        "human_review_threshold": threshold
+        if threshold is not None
+        else float(os.environ.get("SQR_HUMAN_REVIEW_THRESHOLD", "0.7")),
         "events": [],
     }
     graph = build_graph().compile()
@@ -85,6 +92,7 @@ async def _run(q_path: str, kb_path: str | None, threshold: float | None) -> Non
 def version() -> None:
     """Print version."""
     from sqr import __version__
+
     console.print(f"security-questionnaire-responder {__version__}")
 
 

@@ -12,14 +12,43 @@ import re
 from collections import Counter
 
 _STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "by", "do", "for", "from", "have",
-    "in", "is", "it", "its", "of", "on", "or", "that", "the", "this", "to", "was",
-    "we", "with", "you", "your",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "do",
+    "for",
+    "from",
+    "have",
+    "in",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "this",
+    "to",
+    "was",
+    "we",
+    "with",
+    "you",
+    "your",
 }
 
 
 def _tokens(text: str) -> list[str]:
-    return [t for t in re.findall(r"[a-z0-9_]+", text.lower()) if t not in _STOPWORDS and len(t) > 2]
+    return [
+        t
+        for t in re.findall(r"[a-z0-9_]+", text.lower())
+        if t not in _STOPWORDS and len(t) > 2
+    ]
 
 
 def retrieve(
@@ -39,9 +68,12 @@ def retrieve(
         kb_tokens = Counter(_tokens(entry["statement"]))
         # Token overlap (Jaccard-ish)
         common = sum((q_tokens & kb_tokens).values())
-        if common == 0 and not any(t in question.lower() for t in entry.get("topics", [])):
+        if common == 0 and not any(
+            t in question.lower() for t in entry.get("topics", [])
+        ):
             continue
-        score = common
+        # Starts as a token-overlap count but accumulates fractional topic boosts.
+        score = float(common)
         # Topic-tag boost: if a topic substring appears in the question, boost
         for topic in entry.get("topics", []):
             normalized = topic.replace("_", " ")

@@ -22,6 +22,17 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: pip install ruff mypy pytest
+      # The project itself has to be installed or this job only pretends to
+      # check it: mypy reports every third-party import as unresolvable instead
+      # of type-checking the code, and pytest cannot import the package under
+      # test at all. The toolkit is a sibling repo, not a PyPI release, so it is
+      # fetched the same way the tests workflow fetches it.
+      - name: install project and its sibling toolkit
+        run: |
+          git clone --depth 1 https://github.com/anthonyonazure/b2b-agent-toolkit.git \
+            "$RUNNER_TEMP/b2b-agent-toolkit"
+          pip install "$RUNNER_TEMP/b2b-agent-toolkit"
+          pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy .
