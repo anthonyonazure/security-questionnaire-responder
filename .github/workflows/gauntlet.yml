@@ -11,48 +11,113 @@ on:
     - cron: "17 6 * * *"
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A literal, not ${{ github.workflow }}. That expression is the workflow's
+  # display NAME, so any two workflow files that happen to share a name share a
+  # concurrency group and cancel each other — and a cancelled run is neither a
+  # pass nor a failure, so the dashboard recorded it as CANCELLED and the gates
+  # simply never reported. Naming the group after this file makes the collision
+  # structurally impossible instead of merely unlikely.
+  group: gauntlet-gates-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   python:
     name: Python
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: pip install ruff mypy pytest
-      # The project itself has to be installed or this job only pretends to
-      # check it: mypy reports every third-party import as unresolvable instead
-      # of type-checking the code, and pytest cannot import the package under
-      # test at all. The toolkit is a sibling repo, not a PyPI release, so it is
-      # fetched the same way the tests workflow fetches it.
-      - name: install project and its sibling toolkit
+      - name: install the project under test
         run: |
-          git clone --depth 1 https://github.com/anthonyonazure/b2b-agent-toolkit.git \
-            "$RUNNER_TEMP/b2b-agent-toolkit"
-          pip install "$RUNNER_TEMP/b2b-agent-toolkit"
-          pip install -e ".[dev]"
+          python -m pip install --upgrade pip
+          # Whatever this repo actually commits, in the order pip expects it.
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          for extra in requirements-dev.txt dev-requirements.txt requirements/dev.txt test-requirements.txt; do
+            if [ -f "$extra" ]; then pip install -r "$extra"; fi
+          done
+          # An editable install is what makes `import yourpackage` resolve for
+          # mypy and pytest. Only attempted where the repo declares itself
+          # installable — `pip install -e .` on a pyproject.toml that carries
+          # nothing but [tool.ruff] fails for a reason that is not a defect.
+          if [ -f setup.py ] || [ -f setup.cfg ] || grep -Eq '^\[(project|build-system)\]' pyproject.toml 2>/dev/null; then
+            pip install -e . || pip install .
+          fi
+      - name: install the gate's own tools (pinned)
+        run: pip install "ruff==0.16.2" "mypy==2.3.0" "pytest==9.1.1"
       - run: ruff check .
       - run: ruff format --check .
-      - run: mypy .
-      - run: pytest -q
+      - name: types
+        run: |
+          set +e
+          out=$(mypy . 2>&1); code=$?
+          set -e
+          echo "$out"
+          if printf '%s' "$out" | grep -Eq 'There are no \.py\[i\] files'; then
+            echo "GATE mypy = NOT_APPLICABLE (no Python source files to type-check)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=GATE mypy NOT_APPLICABLE::no Python source files to type-check — nothing was checked, so this tick verifies nothing"
+            exit 0
+          fi
+          if [ "$code" -ne 0 ]; then exit "$code"; fi
+          echo "GATE mypy = VERIFIED" >> "$GITHUB_STEP_SUMMARY"
+      - name: tests
+        run: |
+          set +e
+          pytest -q; code=$?
+          set -e
+          # pytest exits 5 when it collected nothing at all. That is "there is
+          # nothing here to run", not a failure, and not a pass either.
+          if [ "$code" -eq 5 ]; then
+            echo "GATE pytest = NOT_APPLICABLE (pytest collected no tests in this repo)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=GATE pytest NOT_APPLICABLE::pytest collected no tests in this repo — nothing was checked, so this tick verifies nothing"
+            exit 0
+          fi
+          if [ "$code" -ne 0 ]; then exit "$code"; fi
+          echo "GATE pytest = VERIFIED" >> "$GITHUB_STEP_SUMMARY"
   secrets:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
     container:
       image: zricethezav/gitleaks:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       # gitleaks CLI is license-free; the gitleaks-action wrapper is NOT (it requires
       # a paid GITLEAKS_LICENSE on org accounts). Run the binary directly to avoid that.
-      - run: gitleaks detect --source . --redact --exit-code 1 --no-banner
+      - name: secret scan
+        run: |
+          # actions/checkout announces "Temporarily overriding HOME=..." before
+          # it registers its own safe.directory exception, i.e. it writes it to
+          # a throwaway global config and takes it away again. The image's
+          # /root/.gitconfig is bypassed too, because job containers run with
+          # HOME=/github/home. Without this line git cannot open the repo and
+          # gitleaks reports a clean scan of nothing.
+          git config --global --add safe.directory "$(pwd)"
+          set +e
+          out=$(gitleaks detect --source . --redact --exit-code 1 --no-banner 2>&1); code=$?
+          set -e
+          echo "$out"
+          # --exit-code covers "leaks were found". Nothing in it covers "the
+          # scan could not start", which gitleaks downgrades to a log line
+          # before exiting 0.
+          if printf '%s' "$out" | grep -Eq 'detected dubious ownership|\[git\] fatal:|stderr is not empty'; then
+            echo "GATE secrets = FAILED (gitleaks could not read this repository, so nothing was scanned)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if printf '%s' "$out" | grep -Eq '(^|[^0-9])0 commits scanned|scanned ~0 bytes'; then
+            echo "GATE secrets = FAILED (gitleaks read 0 commits / 0 bytes — an armed repo always has committed files)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "GATE secrets = FAILED (gitleaks found secrets in this repository)" >> "$GITHUB_STEP_SUMMARY"
+            exit "$code"
+          fi
+          scanned=$(printf '%s' "$out" | grep -Eo '[0-9]+ commits scanned' | tail -1)
+          echo "GATE secrets = VERIFIED (no leaks in $scanned)" >> "$GITHUB_STEP_SUMMARY"
   deps:
     name: dependency CVEs (osv-scanner)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: scan lockfiles for known vulnerabilities
         run: |
           curl -sSfL -o osv-scanner \
@@ -72,11 +137,56 @@ jobs:
             echo "GATE deps = VERIFIED" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit $code
+  confusion:
+    name: dependency confusion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
+        with: { go-version: 'stable' }
+      - run: go install github.com/visma-prodsec/confused@latest
+      - name: check every manifest for unpublished package names
+        run: |
+          SCOPES="${{ vars.GAUNTLET_PRIVATE_SCOPES }}"
+          fail=0
+          scan() {
+            [ -f "$2" ] || return 0
+            echo "== $2 ($1)"
+            if [ -n "$SCOPES" ]; then
+              confused -l "$1" -s "$SCOPES" "$2" || fail=1
+            else
+              confused -l "$1" "$2" || fail=1
+            fi
+          }
+          scan npm package.json
+          scan pip requirements.txt
+          scan mvn pom.xml
+          scan rubygems Gemfile.lock
+          if [ "$fail" -ne 0 ]; then
+            echo "GATE dependency-confusion = FAILED (a dependency name is not published on the public registry)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "GATE dependency-confusion = VERIFIED" >> "$GITHUB_STEP_SUMMARY"
+  sbom:
+    name: software bill of materials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          artifact-name: sbom.cyclonedx.json
+          output-file: sbom.cyclonedx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cyclonedx.json
+          retention-days: 365
   licenses:
     name: licence policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: inventory dependency licences
         run: |
           curl -sSfL -o osv-scanner \
@@ -110,9 +220,10 @@ jobs:
     container:
       image: semgrep/semgrep:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: advisory scan (all severities, never blocks)
         run: |
+          git config --global --add safe.directory "$(pwd)"
           semgrep scan --config=p/default --metrics=off --no-error \
             --text --output=advisory.txt . || true
           {
@@ -123,5 +234,22 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: blocking scan (high-confidence only)
         run: |
-          semgrep scan --config=p/default --metrics=off --severity=ERROR --error .
-          echo "GATE sast = VERIFIED (no ERROR-severity findings)" >> "$GITHUB_STEP_SUMMARY"
+          # Repeated deliberately: each step must stand on its own, so that
+          # deleting the step above can never silently disarm this one.
+          git config --global --add safe.directory "$(pwd)"
+          set +e
+          out=$(semgrep scan --config=p/default --metrics=off --severity=ERROR --error . 2>&1); code=$?
+          set -e
+          echo "$out"
+          targets=$(printf '%s' "$out" | awk '/Ran [0-9]+ rules? on [0-9]+ files?:/ { n = $5 } END { if (n != "") print n }')
+          if [ -z "$targets" ]; then
+            echo "GATE sast = FAILED (semgrep printed no scan summary, so it cannot be said to have run)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$targets" -eq 0 ]; then
+            echo "GATE sast = NOT_APPLICABLE (semgrep found no files it can analyse in this repo)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=GATE sast NOT_APPLICABLE::semgrep found no files it can analyse in this repo — nothing was checked, so this tick verifies nothing"
+            exit 0
+          fi
+          if [ "$code" -ne 0 ]; then exit "$code"; fi
+          echo "GATE sast = VERIFIED (no ERROR-severity findings across $targets files)" >> "$GITHUB_STEP_SUMMARY"
