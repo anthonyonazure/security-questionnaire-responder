@@ -40,7 +40,14 @@ jobs:
           # installable — `pip install -e .` on a pyproject.toml that carries
           # nothing but [tool.ruff] fails for a reason that is not a defect.
           if [ -f setup.py ] || [ -f setup.cfg ] || grep -Eq '^\[(project|build-system)\]' pyproject.toml 2>/dev/null; then
-            pip install -e . || pip install .
+            # Extras first, and dev before test, because a project that
+            # declares its type stubs under [project.optional-dependencies] gets
+            # them installed by NOTHING otherwise. Measured: vciso-assistant
+            # declares types-PyYAML in its dev extra, the plain editable install
+            # skipped it, and mypy failed on "Library stubs not installed for
+            # yaml" -- a gate failing over a dependency the repo had already
+            # correctly declared.
+            pip install -e ".[dev]" 2>/dev/null               || pip install -e ".[test]" 2>/dev/null               || pip install -e .               || pip install .
           fi
       - name: install the gate's own tools (pinned)
         run: pip install "ruff==0.16.2" "mypy==2.3.0" "pytest==9.1.1"
