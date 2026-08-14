@@ -12,12 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout this agent
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: agent
 
       - name: Checkout toolkit (sibling dep)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: anthonyonazure/b2b-agent-toolkit
           path: b2b-agent-toolkit
