@@ -1,14 +1,30 @@
 name: gauntlet
+# gauntlet-generator: a591be70b4ae
+# Regenerate with `arm-gauntlet.ts --upgrade`. A repo whose stamp differs from
+# the installer's is running an older set of gates, which is what the sweep
+# checks rather than guessing from what the file happens to contain.
 on:
+  # Push runs only on the branch this repo publishes from. Every other branch is
+  # checked by its pull request instead. Triggering on both used to run the whole
+  # gauntlet TWICE for every push to an open pull request, once under each name,
+  # and the two never cancelled each other because GitHub files them under
+  # different refs. On 2026-09-15 a fleet-wide upgrade did that across every repo
+  # and cost more in two days than the rest of the month. A branch pushed with no
+  # pull request is no longer checked until one is opened, which is when a check
+  # can block anything.
   push:
+    branches: ["main"]
   pull_request:
   # A repo you have not touched in three months has not been checked in three
   # months, while new vulnerabilities against what it already ships are
   # published daily. The dependency and secret gates are time-sensitive, not
-  # edit-sensitive, so the whole gauntlet re-runs on a clock as well as on a
-  # commit. Silence is not the same as safety.
+  # edit-sensitive, so the whole gauntlet also re-runs on a clock. Weekly, not
+  # daily: across a fleet of private repos a daily run was the single largest
+  # line on the bill, and GitHub's own security alerts, which cost nothing, still
+  # flag a newly published vulnerability the day it lands. Silence is not the
+  # same as safety, and neither is a bill nobody expected.
   schedule:
-    - cron: "17 6 * * *"
+    - cron: "17 6 * * 1"
   workflow_dispatch:
 concurrency:
   # A literal, not ${{ github.workflow }}. That expression is the workflow's
@@ -19,12 +35,20 @@ concurrency:
   # structurally impossible instead of merely unlikely.
   group: gauntlet-gates-${{ github.ref }}
   cancel-in-progress: true
+# Read-only by default, and every job that needs more says so itself. The
+# default token is otherwise write-capable across the repository, so a scanner
+# that pulls a compromised package is a scanner that can push to main. Only
+# codeql widens this, and only to publish its own findings.
+permissions:
+  contents: read
 jobs:
   python:
+    timeout-minutes: 90
     name: Python
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with: { python-version: '3.12' }
       - name: install the project under test
@@ -50,7 +74,7 @@ jobs:
             pip install -e ".[dev]" 2>/dev/null               || pip install -e ".[test]" 2>/dev/null               || pip install -e .               || pip install .
           fi
       - name: install the gate's own tools (pinned)
-        run: pip install "ruff==0.16.2" "mypy==2.3.0" "pytest==9.1.1"
+        run: pip install "ruff==0.16.2" "mypy==2.3.0" "pytest==9.1.1" "pytest-cov==7.1.0"
       - run: ruff check .
       - run: ruff format --check .
       - name: types
@@ -69,25 +93,48 @@ jobs:
       - name: tests
         run: |
           set +e
-          pytest -q; code=$?
+          # --cov-report=term prints the TOTAL row the coverage floor is read
+          # from. The output is kept, then echoed, so the log reads as before.
+          out=$(pytest -q --cov=. --cov-report=term 2>&1); code=$?
           set -e
+          echo "$out"
           # pytest exits 5 when it collected nothing at all. That is "there is
-          # nothing here to run", not a failure, and not a pass either.
+          # nothing here to run": not a pass, and for a production repo a failure.
           if [ "$code" -eq 5 ]; then
+            if grep -Eq '"tier"[[:space:]]*:[[:space:]]*"production"' .gauntlet.json 2>/dev/null; then
+              echo "GATE pytest = FAILED (this repo is marked production, and pytest collected no tests in this repo)" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error title=GATE pytest FAILED::marked production in .gauntlet.json, and pytest collected no tests in this repo"
+              exit 1
+            fi
             echo "GATE pytest = NOT_APPLICABLE (pytest collected no tests in this repo)" >> "$GITHUB_STEP_SUMMARY"
             echo "::warning title=GATE pytest NOT_APPLICABLE::pytest collected no tests in this repo — nothing was checked, so this tick verifies nothing"
             exit 0
           fi
           if [ "$code" -ne 0 ]; then exit "$code"; fi
           echo "GATE pytest = VERIFIED" >> "$GITHUB_STEP_SUMMARY"
+          floor=$(grep -Eo '"coverageFloorPercent"[[:space:]]*:[[:space:]]*[0-9]+([.][0-9]+)?' .gauntlet.json 2>/dev/null | grep -Eo '[0-9]+([.][0-9]+)?$' || true)
+          total=$(printf '%s\n' "$out" | awk '/^TOTAL[ \t]/ { v = $NF; sub(/%$/, "", v); t = v } END { if (t != "") print t + 0 }')
+          if [ -z "$floor" ]; then
+            echo "GATE coverage = NOT_APPLICABLE (no coverageFloorPercent in .gauntlet.json; this run measured ${total:-nothing})" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=GATE coverage NOT_APPLICABLE::no floor recorded; this run measured ${total:-nothing}%. Re-arm with --upgrade to record one."
+          elif [ -z "$total" ]; then
+            echo "GATE coverage = FAILED (a floor of $floor% is recorded, but this run printed no coverage total to compare)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          elif awk -v a="$total" -v b="$floor" 'BEGIN { exit !(a < b) }'; then
+            echo "GATE coverage = FAILED (project total $total% is below the floor $floor%)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          else
+            echo "GATE coverage = VERIFIED (project total $total% >= floor $floor%)" >> "$GITHUB_STEP_SUMMARY"
+          fi
   secrets:
+    timeout-minutes: 90
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
     container:
-      image: zricethezav/gitleaks:latest
+      image: zricethezav/gitleaks:latest@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with: { fetch-depth: 0 }
+        with: { fetch-depth: 0, persist-credentials: false }
       # gitleaks CLI is license-free; the gitleaks-action wrapper is NOT (it requires
       # a paid GITLEAKS_LICENSE on org accounts). Run the binary directly to avoid that.
       - name: secret scan
@@ -121,17 +168,30 @@ jobs:
           scanned=$(printf '%s' "$out" | grep -Eo '[0-9]+ commits scanned' | tail -1)
           echo "GATE secrets = VERIFIED (no leaks in $scanned)" >> "$GITHUB_STEP_SUMMARY"
   deps:
+    timeout-minutes: 90
     name: dependency CVEs (osv-scanner)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
       - name: scan lockfiles for known vulnerabilities
         run: |
           curl -sSfL -o osv-scanner \
             https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64
           chmod +x osv-scanner
+          # Reviewed exceptions from .gauntlet.json become "$@". Directories
+          # only: osv-scanner cannot skip a single file.
+          if [ ! -f .github/gauntlet-scan-exceptions ]; then
+            echo "SCAN EXCEPTIONS = FAILED (.github/gauntlet-scan-exceptions is missing, so .gauntlet.json cannot be read; re-arm with --upgrade)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=scan exceptions::.github/gauntlet-scan-exceptions is missing, so .gauntlet.json cannot be read. Re-arm with --upgrade."
+            exit 1
+          fi
+          exc_dir=$(mktemp -d)
+          python3 .github/gauntlet-scan-exceptions osv "$exc_dir" report
+          set --
+          while IFS= read -r exc_arg; do set -- "$@" "$exc_arg"; done < "$exc_dir/args"
           set +e
-          ./osv-scanner scan source --recursive ./
+          ./osv-scanner scan source --recursive "$@" ./
           code=$?
           set -e
           # 0 = clean. 1 = vulnerabilities found, and that must fail the build.
@@ -145,10 +205,12 @@ jobs:
           fi
           exit $code
   confusion:
+    timeout-minutes: 90
     name: dependency confusion
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with: { go-version: 'stable' }
       - run: go install github.com/visma-prodsec/confused@latest
@@ -240,12 +302,15 @@ jobs:
               if [ -n "$SCOPES" ]; then
                 set -f
                 for pat in $(printf '%s' "$SCOPES" | tr ',' ' '); do
+                  # shellcheck disable=SC2254 # $pat is a glob on purpose: GAUNTLET_PRIVATE_SCOPES
+                  # holds patterns like "@vortex/*", and quoting it would match that string
+                  # literally and skip nothing.
                   case "$name" in $pat) skip=1 ;; esac
                 done
                 set +f
               fi
               [ "$skip" -eq 0 ] || { echo "  skip $name (declared private via GAUNTLET_PRIVATE_SCOPES)"; continue; }
-              norm=$(printf '%s' "$name" | tr 'A-Z' 'a-z' | sed -e 's/[-_.][-_.]*/-/g')
+              norm=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -e 's/[-_.][-_.]*/-/g')
               code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 --retry 2 "$PYPI_SIMPLE/$norm/" || echo 000)
               checked=$((checked+1))
               echo "  $name -> $PYPI_SIMPLE/$norm/ : $code"
@@ -321,10 +386,12 @@ jobs:
           fi
           echo "GATE dependency-confusion = VERIFIED ($total package names checked against their public registries)" >> "$GITHUB_STEP_SUMMARY"
   sbom:
+    timeout-minutes: 90
     name: software bill of materials
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           format: cyclonedx-json
@@ -336,10 +403,12 @@ jobs:
           path: sbom.cyclonedx.json
           retention-days: 365
   licenses:
+    timeout-minutes: 90
     name: licence policy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
       - name: inventory dependency licences
         run: |
           curl -sSfL -o osv-scanner \
@@ -368,16 +437,27 @@ jobs:
           fi
           echo "GATE licences = VERIFIED" >> "$GITHUB_STEP_SUMMARY"
   sast:
+    timeout-minutes: 90
     name: static analysis (semgrep)
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep:latest
+      image: semgrep/semgrep:latest@sha256:34ab619bf1391a24bfda3f05debd0d8a6ce3093c2d5f9d39cfc00f83c1397823
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
       - name: advisory scan (all severities, never blocks)
         run: |
           git config --global --add safe.directory "$(pwd)"
-          semgrep scan --config=p/default --metrics=off --no-error \
+          if [ ! -f .github/gauntlet-scan-exceptions ]; then
+            echo "SCAN EXCEPTIONS = FAILED (.github/gauntlet-scan-exceptions is missing, so .gauntlet.json cannot be read; re-arm with --upgrade)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=scan exceptions::.github/gauntlet-scan-exceptions is missing, so .gauntlet.json cannot be read. Re-arm with --upgrade."
+            exit 1
+          fi
+          exc_dir=$(mktemp -d)
+          python3 .github/gauntlet-scan-exceptions semgrep "$exc_dir" quiet
+          set --
+          while IFS= read -r exc_arg; do set -- "$@" "$exc_arg"; done < "$exc_dir/args"
+          semgrep scan --config=p/default --metrics=off --no-error "$@" \
             --text --output=advisory.txt . || true
           {
             echo "### Semgrep advisory findings (not blocking)"
@@ -390,8 +470,17 @@ jobs:
           # Repeated deliberately: each step must stand on its own, so that
           # deleting the step above can never silently disarm this one.
           git config --global --add safe.directory "$(pwd)"
+          if [ ! -f .github/gauntlet-scan-exceptions ]; then
+            echo "SCAN EXCEPTIONS = FAILED (.github/gauntlet-scan-exceptions is missing, so .gauntlet.json cannot be read; re-arm with --upgrade)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=scan exceptions::.github/gauntlet-scan-exceptions is missing, so .gauntlet.json cannot be read. Re-arm with --upgrade."
+            exit 1
+          fi
+          exc_dir=$(mktemp -d)
+          python3 .github/gauntlet-scan-exceptions semgrep "$exc_dir" report
+          set --
+          while IFS= read -r exc_arg; do set -- "$@" "$exc_arg"; done < "$exc_dir/args"
           set +e
-          out=$(semgrep scan --config=p/default --metrics=off --severity=ERROR --error . 2>&1); code=$?
+          out=$(semgrep scan --config=p/default --metrics=off --severity=ERROR --error "$@" . 2>&1); code=$?
           set -e
           echo "$out"
           targets=$(printf '%s' "$out" | awk '/Ran [0-9]+ rules? on [0-9]+ files?:/ { n = $5 } END { if (n != "") print n }')
@@ -406,3 +495,215 @@ jobs:
           fi
           if [ "$code" -ne 0 ]; then exit "$code"; fi
           echo "GATE sast = VERIFIED (no ERROR-severity findings across $targets files)" >> "$GITHUB_STEP_SUMMARY"
+  pipeline:
+    timeout-minutes: 90
+    name: pipeline security (zizmor, actionlint)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - name: audit the workflows that run every other gate
+        # Versions resolved when this repo was armed, not "latest" at run time:
+        # a gate whose scanner can change under it is a gate whose verdict can
+        # change without a commit. --upgrade moves both forward deliberately.
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ZIZMOR_VERSION: "1.30.1"
+        run: |
+          shopt -s nullglob
+          set -- .github/workflows/*.yml .github/workflows/*.yaml
+          if [ "$#" -eq 0 ]; then
+            echo "GATE pipeline = NOT_APPLICABLE (this repo has no workflow files to audit)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=GATE pipeline NOT_APPLICABLE::this repo has no workflow files to audit — nothing was checked, so this tick verifies nothing"
+            exit 0
+          fi
+          echo "auditing $# workflow file(s)" >> "$GITHUB_STEP_SUMMARY"
+
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"             | tar xz -C /usr/local/bin actionlint
+          pipx install "zizmor==${ZIZMOR_VERSION}" >/dev/null
+          actionlint --version
+          zizmor --version
+
+          set +e
+          actionlint -no-color "$@" 2>&1 | tee actionlint.out; lint=${PIPESTATUS[0]}
+          zizmor --no-progress --min-severity=medium "$@" 2>&1 | tee zizmor.out; zz=${PIPESTATUS[0]}
+          set -e
+          echo "actionlint exit=$lint  zizmor exit=$zz"
+
+          # tee, not a bare redirect: findings that reach only the step summary
+          # are invisible in the log, and the log is where anyone looking at a
+          # red tick starts. The first version of this gate hid its own failure
+          # that way and cost an extra round trip to diagnose.
+          {
+            echo "### pipeline security"
+            echo '<pre>'
+            cat actionlint.out
+            cat zizmor.out
+            echo '</pre>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # zizmor exits 14 for "findings at or above the threshold" and 0 for
+          # none. Any other non-zero is the tool failing to run, which must not
+          # read as a pass: a crashed scanner and a clean repo both print
+          # nothing useful.
+          if [ "$zz" -ne 0 ] && [ "$zz" -ne 14 ]; then
+            echo "GATE pipeline = FAILED (zizmor could not complete, exit $zz — nothing was audited)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$zz" -eq 14 ] || [ "$lint" -ne 0 ]; then
+            echo "GATE pipeline = FAILED (see the findings above)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "GATE pipeline = VERIFIED ($# workflow file(s) audited, no findings at medium or above)" >> "$GITHUB_STEP_SUMMARY"
+  supplychain:
+    timeout-minutes: 90
+    name: supply chain posture (scorecard) — ADVISORY
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - name: score this repository's own practices
+        env:
+          GITHUB_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCORECARD_VERSION: "5.5.0"
+        run: |
+          curl -sSfL "https://github.com/ossf/scorecard/releases/download/v${SCORECARD_VERSION}/scorecard_${SCORECARD_VERSION}_linux_amd64.tar.gz"             | tar xz -C /usr/local/bin scorecard
+          set +e
+          scorecard --repo="github.com/${{ github.repository }}" --format=default > scorecard.out 2>&1; code=$?
+          set -e
+          {
+            echo "### supply chain posture (advisory, never blocks)"
+            echo '<pre>'
+            cat scorecard.out
+            echo '</pre>'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -ne 0 ] || ! grep -q "Aggregate score" scorecard.out; then
+            echo "TIER supplychain = NOT_ARMED (scorecard could not read this repository; it needs a public repo or a token with read access)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=scorecard NOT_ARMED::supply chain posture was not measured"
+            exit 0
+          fi
+          echo "TIER supplychain = REPORTED ($(grep 'Aggregate score' scorecard.out))" >> "$GITHUB_STEP_SUMMARY"
+  codeql:
+    name: deep analysis (codeql)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+      # The CodeQL action reads its own workflow run. On a private repo without
+      # this, analyze fails with "Resource not accessible by integration":
+      # vortex-email-comply, run 34974718788, red for a missing permission.
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["python"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+        with:
+          languages: ${{ matrix.language }}
+          # security-extended adds the lower-precision rules. This gate exists
+          # to find what pattern matching cannot, so trading some noise for
+          # reach is the whole point of running it.
+          queries: security-extended
+      - uses: github/codeql-action/autobuild@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+      - id: analyze
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+        with:
+          category: "/language:${{ matrix.language }}"
+          # A private repo without Advanced Security cannot receive the upload.
+          # Failing the gate there would mean a red tick that says nothing about
+          # the code, so the upload is allowed to fail and the analysis is not.
+          upload: failure-only
+          output: codeql-results
+      - name: report
+        if: always()
+        # A deep analysis of a codebase nobody has reviewed reports dozens of
+        # findings, most of them true statements about code that is not
+        # actually reachable by an attacker. Failing on the total forever means
+        # a gate that is red on every commit, and a gate that is always red is
+        # one people stop reading — the same failure the secret scanner had.
+        #
+        # So the verdict is against a baseline the repo commits after triage:
+        # .codeql-baseline.json, one entry per rule and file with the count
+        # that was reviewed and the reason it was accepted. Anything NEW fails.
+        # The debt can only shrink, because a count above the recorded one
+        # fails just as loudly as a rule that was never reviewed at all.
+        run: |
+          sarif=$(find codeql-results -name '*.sarif' | head -1)
+          if [ -z "$sarif" ]; then
+            echo "GATE codeql = FAILED (no results file — the analysis did not complete)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          python3 - "$sarif" .codeql-baseline.json <<'GAUNTLET_CODEQL_PY' | tee codeql-report.txt
+          import collections, json, os, sys
+
+          sarif, baseline_path = sys.argv[1], sys.argv[2]
+
+          found = collections.Counter()
+          for run in json.load(open(sarif))["runs"]:
+              for res in run.get("results", []):
+                  # A result CodeQL itself considers suppressed by an
+                  # inline "// codeql[rule-id]" comment is not a finding.
+                  if res.get("suppressions"):
+                      continue
+                  loc = res["locations"][0]["physicalLocation"]
+                  found[(res.get("ruleId", "?"), loc["artifactLocation"]["uri"])] += 1
+
+          baseline = {}
+          if os.path.exists(baseline_path):
+              raw = json.load(open(baseline_path))
+              for entry in raw.get("reviewed", []):
+                  baseline[(entry["rule"], entry["file"])] = entry["count"]
+
+          new = {k: n for k, n in found.items() if n > baseline.get(k, 0)}
+          gone = {k: n for k, n in baseline.items() if found.get(k, 0) < n}
+
+          print(f"findings: {sum(found.values())}   reviewed baseline: {sum(baseline.values())}")
+          for (rule, path), n in sorted(new.items()):
+              print(f"NEW  {n - baseline.get((rule, path), 0):3}  {rule}  {path}")
+          for (rule, path), n in sorted(gone.items()):
+              print(f"FIXED     {rule}  {path} (baseline {n}, now {found.get((rule, path), 0)})")
+
+          if new:
+              print("VERDICT=FAILED")
+          elif gone:
+              # Not a failure: a fixed finding is the point. But the baseline
+              # has to be regenerated or it silently re-permits the finding.
+              print("VERDICT=STALE")
+          else:
+              print("VERDICT=OK")
+          GAUNTLET_CODEQL_PY
+
+          verdict=$(grep -o 'VERDICT=[A-Z]*' codeql-report.txt | cut -d= -f2)
+          {
+            echo "### deep analysis (${{ matrix.language }})"
+            echo '<pre>'
+            cat codeql-report.txt
+            echo '</pre>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          case "$verdict" in
+            FAILED)
+              echo "GATE codeql = FAILED (${{ matrix.language }}: findings above the reviewed baseline)" >> "$GITHUB_STEP_SUMMARY"
+              exit 1 ;;
+            STALE)
+              echo "GATE codeql = VERIFIED (${{ matrix.language }}: nothing new; the baseline lists findings that no longer occur — regenerate it)" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning title=codeql baseline is stale::findings were fixed; regenerate .codeql-baseline.json so they cannot come back unnoticed" ;;
+            *)
+              echo "GATE codeql = VERIFIED (${{ matrix.language }}: nothing above the reviewed baseline)" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+      - name: keep the results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: codeql-${{ matrix.language }}
+          path: codeql-results
+          retention-days: 30
